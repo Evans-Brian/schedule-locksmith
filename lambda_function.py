@@ -121,7 +121,7 @@ def lambda_handler(event, context):
         
         # Create a new job entry
         new_job = {
-            'jobId': f"JOB{uuid.uuid4().hex[:6].upper()}",
+            'jobId': f"JOB{uuid.uuid4().hex[:7].upper()}",
             'address': job_address,
             'latitude': job_latitude,
             'longitude': job_longitude,
@@ -156,7 +156,6 @@ def lambda_handler(event, context):
             'message': 'Locksmith appointment scheduled successfully',
             'jobId': new_job['jobId'],
             'locksmithId': locksmith_id,
-            'company': company_name
         }
         
         return {
