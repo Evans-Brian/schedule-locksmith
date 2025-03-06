@@ -1,0 +1,43 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'IAM Role for schedule-locksmith Lambda function'
+
+Resources:
+  ScheduleLocksmithRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: schedule-locksmith-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LocksmithDynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub 'arn:aws:dynamodb:us-east-2:${AWS::AccountId}:table/NextAvailableCache'
+                  - !Sub 'arn:aws:dynamodb:us-east-2:${AWS::AccountId}:table/*LocksmithJobs'
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !Sub 'arn:aws:logs:us-east-2:${AWS::AccountId}:*'
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:us-east-2:${AWS::AccountId}:function:get-locksmith-eta'
+
+Outputs:
+  RoleArn:
+    Description: ARN of the IAM Role
+    Value: !GetAtt ScheduleLocksmithRole.Arn 

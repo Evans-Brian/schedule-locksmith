@@ -1,0 +1,170 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Lambda function for scheduling locksmith appointments'
+
+Resources:
+  ScheduleLocksmithRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: schedule-locksmith-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ScheduleLocksmithPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # DynamoDB permissions for NextAvailableCache table
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/NextAvailableCache'
+              
+              # DynamoDB permissions for company-specific LocksmithJobs tables
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub 'arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/*LocksmithJobs'
+                
+              # Add permission to invoke get-locksmith-eta Lambda
+              - Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource: !Sub 'arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:get-locksmith-eta'
+
+  ScheduleLocksmithFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: schedule-locksmith
+      Handler: lambda_function.lambda_handler
+      Role: !GetAtt ScheduleLocksmithRole.Arn
+      Runtime: python3.9
+      Timeout: 30
+      MemorySize: 128
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import uuid
+          import os
+          from datetime import datetime
+
+          # Initialize DynamoDB client
+          dynamodb = boto3.resource('dynamodb', region_name='us-east-2')
+
+          def lambda_handler(event, context):
+              try:
+                  # Extract company name from the input
+                  if 'company' not in event:
+                      return {
+                          'statusCode': 400,
+                          'body': json.dumps('Missing required parameter: company')
+                      }
+                  
+                  company_name = event['company']
+                  
+                  # Get data from NextAvailableCache table
+                  cache_table = dynamodb.Table('NextAvailableCache')
+                  cache_response = cache_table.get_item(
+                      Key={
+                          'companyName': company_name
+                      }
+                  )
+                  
+                  if 'Item' not in cache_response:
+                      return {
+                          'statusCode': 404,
+                          'body': json.dumps(f'No available locksmith found for company: {company_name}')
+                      }
+                  
+                  cache_item = cache_response['Item']
+                  locksmith_id = cache_item.get('locksmithId')
+                  travel_time = cache_item.get('travelTime', 0)
+                  job_address = cache_item.get('jobAddress', '')
+                  job_latitude = cache_item.get('jlatitude')
+                  job_longitude = cache_item.get('longitude')
+                  
+                  # Access the company-specific locksmith jobs table
+                  jobs_table_name = f"{company_name}LocksmithJobs"
+                  jobs_table = dynamodb.Table(jobs_table_name)
+                  
+                  # Get the locksmith record
+                  locksmith_response = jobs_table.get_item(
+                      Key={
+                          'locksmithId': locksmith_id
+                      }
+                  )
+                  
+                  if 'Item' not in locksmith_response:
+                      return {
+                          'statusCode': 404,
+                          'body': json.dumps(f'Locksmith with ID {locksmith_id} not found')
+                      }
+                  
+                  locksmith_item = locksmith_response['Item']
+                  
+                  # Create a new job entry
+                  new_job = {
+                      'jobId': f"JOB{uuid.uuid4().hex[:6].upper()}",
+                      'address': job_address,
+                      'latitude': job_latitude,
+                      'longitude': job_longitude,
+                      'estimatedTime': 30,  # Default estimated time is 30 minutes
+                      'travelTime': travel_time,
+                      'arrived': False
+                  }
+                  
+                  # Append the new job to the job queue
+                  job_queue = locksmith_item.get('jobQueue', [])
+                  job_queue.append(new_job)
+                  
+                  # Update the locksmith record
+                  jobs_table.update_item(
+                      Key={
+                          'locksmithId': locksmith_id
+                      },
+                      UpdateExpression='SET jobQueue = :jobQueue',
+                      ExpressionAttributeValues={
+                          ':jobQueue': job_queue
+                      }
+                  )
+                  
+                  # Delete the cache entry after successful booking
+                  cache_table.delete_item(
+                      Key={
+                          'companyName': company_name
+                      }
+                  )
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Locksmith appointment scheduled successfully',
+                          'jobId': new_job['jobId'],
+                          'locksmithId': locksmith_id,
+                          'company': company_name
+                      })
+                  }
+                  
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps(f'Error scheduling locksmith appointment: {str(e)}')
+                  }
+
+Outputs:
+  FunctionArn:
+    Description: ARN of the Lambda function
+    Value: !GetAtt ScheduleLocksmithFunction.Arn
+  RoleArn:
+    Description: ARN of the IAM Role
+    Value: !GetAtt ScheduleLocksmithRole.Arn 
